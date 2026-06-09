@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>립 베이스 3색 혼합 시뮬레이터</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif;
+    color: #1c1c1f; background: #ffffff;
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .card { width: 100%; max-width: 980px; }
+  .head { text-align: center; margin-bottom: 22px; }
+  .head h1 { font-size: 19px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .head p { font-size: 12px; color: #7a7a82; margin: 0; }
+
+  .demo-wrap { display: flex; gap: 40px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  #triCanvas {
+    touch-action: none; cursor: crosshair; border-radius: 14px;
+    box-shadow: 0 10px 34px rgba(0,0,0,.14); background: #faf8f7;
+    width: 100%; max-width: 460px; height: auto; aspect-ratio: 540 / 500;
+  }
+  .panel { width: 300px; }
+  .swatch { width: 100%; height: 104px; border-radius: 12px; border: 1px solid rgba(0,0,0,.12);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,.08); }
+  .hex { font: 600 19px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 12px 0 14px; letter-spacing: .04em; }
+  .ratio-row { display: flex; align-items: center; gap: 10px; margin: 9px 0; }
+  .ratio-row .dot { width: 15px; height: 15px; border-radius: 4px; flex: 0 0 auto; border: 1px solid rgba(0,0,0,.12); }
+  .ratio-row .name { width: 132px; color: #7a7a82; font-size: 11px; line-height: 1.3; }
+  .bar { flex: 1; height: 10px; border-radius: 6px; background: rgba(0,0,0,.07); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 6px; }
+  .ratio-row .pct { width: 44px; text-align: right; font: 600 12px ui-monospace, monospace; }
+  .hint { color: #7a7a82; font-size: 11px; margin-top: 16px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <h1>립 베이스 3색 혼합 시뮬레이터</h1>
+    <p>삼각형 안을 클릭·드래그하면 혼합 비율과 결과 색이 실시간으로 바뀝니다</p>
+  </div>
+
+  <div class="demo-wrap">
+    <canvas id="triCanvas" width="540" height="500"></canvas>
+    <div class="panel">
+      <div class="swatch" id="swatch"></div>
+      <div class="hex" id="hex">#000000</div>
+
+      <div class="ratio-row">
+        <span class="dot" id="dot1"></span><span class="name" id="name1"></span>
+        <span class="bar"><i id="bar1"></i></span><span class="pct" id="pct1">33%</span>
+      </div>
+      <div class="ratio-row">
+        <span class="dot" id="dot2"></span><span class="name" id="name2"></span>
+        <span class="bar"><i id="bar2"></i></span><span class="pct" id="pct2">33%</span>
+      </div>
+      <div class="ratio-row">
+        <span class="dot" id="dot3"></span><span class="name" id="name3"></span>
+        <span class="bar"><i id="bar3"></i></span><span class="pct" id="pct3">33%</span>
+      </div>
+
+      <div class="hint">
+        비율 = 섞는 <b>분량(parts)</b> 기준. 꼭짓점에 가까울수록 그 베이스 비중↑.<br />
+        * 흡광 가산(감산) 모델 기반 <b>예측치</b> — 실제 안료 발색력 차이는 보정 필요.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ===== 베이스 3색: XYZ(0~100) 측정값 → sRGB 선형광 직접 역산 =====
+  // 꼭짓점 슬롯: 위=②, 좌하=①, 우하=③
+  const POS = { top: { x: 270, y: 54 }, left: { x: 54, y: 446 }, right: { x: 486, y: 446 } };
+  const PALETTE = {
+    verts: [
+      { ...POS.top,   XYZ: [22.078, 17.908, 8.638], hex: '#a96349', tag: '②' },
+      { ...POS.left,  XYZ: [9.331, 4.484, 0.107],   hex: '#840000', tag: '①' },
+      { ...POS.right, XYZ: [4.315, 2.51, 2.312],    hex: '#541228', tag: '③' },
+    ],
+    rows: [ // 패널 ①②③ 순서
+      { name: '① 딥 레드(블러드)', hex: '#840000' },
+      { name: '② 브릭 누드',       hex: '#a96349' },
+      { name: '③ 다크 버건디',     hex: '#541228' },
+    ],
+  };
+
+  function xyzToLinear([X, Y, Z]) {
+    X /= 100; Y /= 100; Z /= 100;
+    return [
+      3.2406 * X - 1.5372 * Y - 0.4986 * Z,
+      -0.9689 * X + 1.8758 * Y + 0.0415 * Z,
+      0.0557 * X - 0.2040 * Y + 1.0570 * Z,
+    ].map(c => Math.min(1, Math.max(1e-6, c)));
+  }
+  const linToSrgb = c => { c = Math.min(1, Math.max(0, c)); return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; };
+  const toHex = ([r, g, b]) => '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('');
+
+  const canvas = document.getElementById('triCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const A = POS.top, B = POS.left, C = POS.right;
+  const v0x = B.x - A.x, v0y = B.y - A.y, v1x = C.x - A.x, v1y = C.y - A.y;
+  const d00 = v0x * v0x + v0y * v0y, d01 = v0x * v1x + v0y * v1y, d11 = v1x * v1x + v1y * v1y;
+  const denom = d00 * d11 - d01 * d01;
+  function bary(px, py) {
+    const v2x = px - A.x, v2y = py - A.y;
+    const d20 = v2x * v0x + v2y * v0y, d21 = v2x * v1x + v2y * v1y;
+    const v = (d11 * d20 - d01 * d21) / denom, w = (d00 * d21 - d01 * d20) / denom;
+    return [1 - v - w, v, w];
+  }
+
+  const VERTS = PALETTE.verts;
+  const LIN = VERTS.map(v => xyzToLinear(v.XYZ));
+  const triImg = ctx.createImageData(W, H);
+  let handle = { x: (A.x + B.x + C.x) / 3, y: (A.y + B.y + C.y) / 3 };
+
+  function mixRGB(w) {
+    const out = [0, 0, 0];
+    for (let k = 0; k < 3; k++)
+      out[k] = Math.pow(LIN[0][k], w[0]) * Math.pow(LIN[1][k], w[1]) * Math.pow(LIN[2][k], w[2]);
+    return out.map(c => Math.round(linToSrgb(c) * 255));
+  }
+  function paintTriangle() {
+    const d = triImg.data;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const [u, v, w] = bary(x + 0.5, y + 0.5);
+      const i = (y * W + x) * 4;
+      if (u >= -0.002 && v >= -0.002 && w >= -0.002) {
+        const [r, g, b] = mixRGB([Math.max(0, u), Math.max(0, v), Math.max(0, w)]);
+        d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+      } else d[i + 3] = 0;
+    }
+  }
+  function clampInside(px, py) {
+    let [u, v, w] = bary(px, py);
+    u = Math.max(0, u); v = Math.max(0, v); w = Math.max(0, w);
+    const s = u + v + w || 1; u /= s; v /= s; w /= s;
+    return { x: u * A.x + v * B.x + w * C.x, y: u * A.y + v * B.y + w * C.y, u, v, w };
+  }
+
+  const $ = id => document.getElementById(id);
+  const panel = {
+    swatch: $('swatch'), hex: $('hex'),
+    rows: [
+      { dot: $('dot1'), name: $('name1'), bar: $('bar1'), pct: $('pct1') },
+      { dot: $('dot2'), name: $('name2'), bar: $('bar2'), pct: $('pct2') },
+      { dot: $('dot3'), name: $('name3'), bar: $('bar3'), pct: $('pct3') },
+    ],
+  };
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.putImageData(triImg, 0, 0);
+    ctx.font = '600 25px ui-monospace, monospace';
+    ctx.fillStyle = '#333'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(VERTS[0].tag, A.x, A.y - 28);
+    ctx.fillText(VERTS[1].tag, B.x - 28, B.y + 14);
+    ctx.fillText(VERTS[2].tag, C.x + 28, C.y + 14);
+
+    const { u, v, w } = clampInside(handle.x, handle.y);
+    const rgb = mixRGB([u, v, w]);
+    ctx.beginPath(); ctx.arc(handle.x, handle.y, 13, 0, Math.PI * 2);
+    ctx.fillStyle = toHex(rgb); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,.4)';
+    ctx.beginPath(); ctx.arc(handle.x, handle.y, 14.5, 0, Math.PI * 2); ctx.stroke();
+
+    const hex = toHex(rgb);
+    panel.swatch.style.background = hex;
+    panel.hex.textContent = hex.toUpperCase();
+    const vals = [v, u, w]; // ①=left(v), ②=top(u), ③=right(w)
+    panel.rows.forEach((r, i) => {
+      r.bar.style.width = (vals[i] * 100).toFixed(1) + '%';
+      r.pct.textContent = Math.round(vals[i] * 100) + '%';
+    });
+  }
+
+  // 패널 라벨/색 1회 세팅
+  panel.rows.forEach((r, i) => {
+    r.dot.style.background = PALETTE.rows[i].hex;
+    r.bar.style.background = PALETTE.rows[i].hex;
+    r.name.innerHTML = PALETTE.rows[i].name + '<br>' + PALETTE.rows[i].hex;
+  });
+
+  let dragging = false;
+  function setFromEvent(e) {
+    const r = canvas.getBoundingClientRect();
+    const p = clampInside((e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height));
+    handle.x = p.x; handle.y = p.y; render();
+  }
+  canvas.addEventListener('pointerdown', e => { dragging = true; canvas.setPointerCapture(e.pointerId); setFromEvent(e); });
+  canvas.addEventListener('pointermove', e => { if (dragging) setFromEvent(e); });
+  canvas.addEventListener('pointerup', () => { dragging = false; });
+
+  paintTriangle();
+  render();
+</script>
+</body>
+</html>
